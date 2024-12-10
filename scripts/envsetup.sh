@@ -68,8 +68,8 @@ RV_LTP_SRC_DIR=$RV_TOP_DIR/bsp-solutions/ltp
 RV_LTP_OUTPUT_DIR=$RV_OUTPUT_DIR/ltp
 
 TPUV7_RUNTIME_DIR=$RV_TOP_DIR/tpuv7-runtime
-TPUV7_AP_DAEMON=$TPUV7_RUNTIME_DIR/build/asic/cdmlib/ap/daemon/cdm_daemon/cdm_daemon
-TPUV7_TP_DAEMON=$TPUV7_RUNTIME_DIR/build/asic/cdmlib/tp/daemon/tp_daemon
+TPUV7_AP_DAEMON=$TPUV7_RUNTIME_DIR/build/fw/ap/daemon/cdm_daemon
+TPUV7_TP_DAEMON=$TPUV7_RUNTIME_DIR/build/fw/tp/daemon/tp_daemon
 
 RV_DISTRO_DIR=$RV_TOP_DIR/distro_riscv
 RV_UBUNTU_DISTRO=ubuntu
@@ -336,7 +336,6 @@ function build_rv_pcie_zsbl()
 	    fi
 
 	mkdir -p $RV_FIRMWARE_INSTALL_DIR
-
 	cp $RV_ZSBL_BUILD_DIR/zsbl.bin $RV_FIRMWARE_INSTALL_DIR/pcie_zsbl.bin
 }
 
@@ -351,7 +350,7 @@ function build_rv_tp_zsbl()
 	local err
 
 	pushd $RV_ZSBL_SRC_DIR
-	make CROSS_COMPILE=$RISCV64_LINUX_CROSS_COMPILE O=$RV_ZSBL_BUILD_DIR ARCH=riscv bm1690_tpu_defconfig
+	make CROSS_COMPILE=$RISCV64_LINUX_CROSS_COMPILE O=$RV_ZSBL_BUILD_DIR ARCH=riscv bm1690tp_defconfig
 	err=$?
 	popd
 
@@ -472,8 +471,6 @@ function build_rv_edk2()
 
 		cp $RV_EDKII_SRC_DIR/Build/SG2042_EVB/$TARGET\_GCC5/FV/SG2042.fd $RV_FIRMWARE_INSTALL_DIR
 	else
-		git checkout devel-${CHIP}
-
 		git submodule sync
 		git submodule update --init --recursive
 
@@ -485,20 +482,6 @@ function build_rv_edk2()
 		source edk2/edksetup.sh
 
 		make -C edk2/BaseTools -j$(nproc)
-
-		git checkout devel-${CHIP}
-
-		pushd edk2-platforms
-		git checkout devel-${CHIP}
-		popd
-
-		pushd edk2-non-osi
-		git checkout devel-${CHIP}
-		popd
-
-		pushd edk2
-		git checkout devel-${CHIP}
-		popd
 
 		TARGET=DEBUG
 		build -a RISCV64 -t GCC5 -b $TARGET -p Platform/Sophgo/${CHIP^^}Pkg/${CHIP^^}.dsc
@@ -800,7 +783,7 @@ function build_rv_ubuntu_kernel()
 	fi
 
 	local KERNELRELEASE=$(make ARCH=riscv LOCALVERSION="" kernelrelease)
-	make -j$(nproc) ARCH=riscv CROSS_COMPILE=$RISCV64_LINUX_CROSS_COMPILE LOCALVERSION="" bindeb-pkg
+	make -j$(nproc) ARCH=riscv CROSS_COMPILE=$RISCV64_LINUX_CROSS_COMPILE LOCALVERSION="" bindeb-pkg dtbs
 	ret=$?
 	if [ $ret -ne 0 ]; then
 		popd
@@ -815,6 +798,12 @@ function build_rv_ubuntu_kernel()
 	mv ../linux-image-${KERNELRELEASE}_*.deb $RV_DEB_INSTALL_DIR/linux-image-${KERNELRELEASE}.deb
 	mv ../linux-headers-${KERNELRELEASE}_*.deb $RV_DEB_INSTALL_DIR/linux-headers-${KERNELRELEASE}.deb
 	mv ../linux-libc-dev_${KERNELRELEASE}-*.deb $RV_DEB_INSTALL_DIR/linux-libc-dev_${KERNELRELEASE}.deb
+
+	if [ ! -d $RV_FIRMWARE_INSTALL_DIR ]; then
+		mkdir -p $RV_FIRMWARE_INSTALL_DIR
+	fi
+	cp $RV_KERNEL_BUILD_DIR/arch/riscv/boot/dts/sophgo/${CHIP}-*.dtb $RV_FIRMWARE_INSTALL_DIR
+
 	popd
 }
 
@@ -823,6 +812,7 @@ function clean_rv_ubuntu_kernel()
 	RV_KERNEL_BUILD_DIR=$RV_TOP_DIR/build/$CHIP/linux-riscv/ubuntu
 	rm -rf $RV_KERNEL_BUILD_DIR
 	rm -f $RV_DEB_INSTALL_DIR/linux-*.deb
+	rm -f $RV_FIRMWARE_INSTALL_DIR/*.dtb
 }
 
 function build_rv_fedora_kernel()
@@ -831,7 +821,6 @@ function build_rv_fedora_kernel()
 	local KERNELRELEASE
 	local RPMBUILD_DIR
 	local err
-	RV_KERNEL_BUILD_DIR=$RV_TOP_DIR/build/$CHIP/linux-riscv/fedora
 
 	pushd $RV_KERNEL_SRC_DIR
 	make ARCH=riscv CROSS_COMPILE=$RISCV64_LINUX_CROSS_COMPILE $RV_KERNEL_CONFIG
@@ -856,10 +845,10 @@ cat >> ~/.rpmmacros << "EOT"
 EOT
 
 	KERNELRELEASE=$(make ARCH=riscv LOCALVERSION="" kernelrelease)
-	if [[ ${KERNELRELEASE:0:3} == "6.1" ]]; then
+	if [[ ${KERNELRELEASE:0:4} == "6.1." ]]; then
 		RPMBUILD_DIR=$HOME/rpmbuild
 	else
-		RPMBUILD_DIR=$RV_TOP_DIR/build/$CHIP/rpmbuild
+		RPMBUILD_DIR=$RV_KERNEL_SRC_DIR/rpmbuild
 	fi
 
 	make -j$(nproc) ARCH=riscv CROSS_COMPILE=$RISCV64_LINUX_CROSS_COMPILE LOCALVERSION="" rpm-pkg
@@ -892,7 +881,6 @@ EOT
 
 function clean_rv_fedora_kernel()
 {
-	RV_KERNEL_BUILD_DIR=$RV_TOP_DIR/build/$CHIP/linux-riscv/fedora
 	pushd $RV_KERNEL_SRC_DIR
 	make distclean
 	popd
@@ -905,7 +893,6 @@ function build_rv_euler_kernel()
 	local KERNELRELEASE
 	local RPMBUILD_DIR
 	local err
-	RV_KERNEL_BUILD_DIR=$RV_TOP_DIR/build/$CHIP/linux-riscv/euler
 
 	pushd $RV_KERNEL_SRC_DIR
 	make ARCH=riscv CROSS_COMPILE=$RISCV64_LINUX_CROSS_COMPILE $RV_KERNEL_CONFIG
@@ -930,11 +917,20 @@ cat >> ~/.rpmmacros << "EOT"
 EOT
 
 	KERNELRELEASE=$(make ARCH=riscv LOCALVERSION="" kernelrelease)
-	if [[ ${KERNELRELEASE:0:3} == "6.1" ]]; then
+	if [[ ${KERNELRELEASE:0:4} == "6.1." ]]; then
 		RPMBUILD_DIR=$HOME/rpmbuild
 	else
-		RPMBUILD_DIR=$RV_TOP_DIR/build/$CHIP/rpmbuild
+		RPMBUILD_DIR=$RV_KERNEL_SRC_DIR/rpmbuild
 	fi
+
+	make -j$(nproc) ARCH=riscv CROSS_COMPILE=$RISCV64_LINUX_CROSS_COMPILE LOCALVERSION="" dtbs
+	if [ ! -d $RV_FIRMWARE_INSTALL_DIR ]; then
+		mkdir -p $RV_FIRMWARE_INSTALL_DIR
+	else
+		rm -f $RV_FIRMWARE_INSTALL_DIR/${CHIP}-*.dtb
+	fi
+
+	cp $RV_KERNEL_SRC_DIR/arch/riscv/boot/dts/sophgo/${CHIP}-*.dtb $RV_FIRMWARE_INSTALL_DIR
 
 	make -j$(nproc) ARCH=riscv CROSS_COMPILE=$RISCV64_LINUX_CROSS_COMPILE LOCALVERSION="" rpm-pkg
 	ret=$?
@@ -957,6 +953,7 @@ EOT
 		rm -f $RV_RPM_INSTALL_DIR/kernel-*.rpm
 	fi
 
+
 	cp $RPMBUILD_DIR/RPMS/riscv64/*.rpm $RV_RPM_INSTALL_DIR/
 	make ARCH=riscv CROSS_COMPILE=$RISCV64_LINUX_CROSS_COMPILE distclean
 	rm *.tar.gz
@@ -966,11 +963,11 @@ EOT
 
 function clean_rv_euler_kernel()
 {
-	RV_KERNEL_BUILD_DIR=$RV_TOP_DIR/build/$CHIP/linux-riscv/euler
 	pushd $RV_KERNEL_SRC_DIR
 	make distclean
 	popd
 	rm -f $RV_RPM_INSTALL_DIR/kernel-*.rpm
+	rm -f $RV_FIRMWARE_INSTALL_DIR/*.dtb
 }
 
 RAMDISK_CPU_TYPES=(
@@ -1022,8 +1019,8 @@ function build_rv_ramdisk_ci()
 		if [ -f $TPUV7_AP_DAEMON ]; then
 			echo "copy cdmlib overlay ap all to rootfs/"
 			cp $TPUV7_AP_DAEMON $RV_RAMDISK_DIR/build/$RAMDISK_CPU_TYPE/rootfs/
-			cp $TPUV7_RUNTIME_DIR/build/asic/cdmlib/ap/tools/debug_console_clnt/debug_console_clnt $RV_RAMDISK_DIR/build/ap/rootfs/
-			cp $TPUV7_RUNTIME_DIR/build/asic/cdmlib/ap/tools/dump_memory/dump $RV_RAMDISK_DIR/build/ap/rootfs/
+			cp $TPUV7_RUNTIME_DIR/build/fw/ap/tools/debug_console_clnt/debug_console_clnt $RV_RAMDISK_DIR/build/ap/rootfs/
+			cp $TPUV7_RUNTIME_DIR/build/fw/ap/tools/dump_memory/dump $RV_RAMDISK_DIR/build/ap/rootfs/
 		else
 			echo "no ap daemon found"
 			return 1
@@ -1112,8 +1109,8 @@ function build_rv_ramdisk()
 		if [ -f $TPUV7_AP_DAEMON ]; then
 			echo "copy cdmlib overlay ap all to rootfs/"
 			cp $TPUV7_AP_DAEMON $RV_RAMDISK_DIR/build/$RAMDISK_CPU_TYPE/rootfs/
-			cp $TPUV7_RUNTIME_DIR/build/asic/cdmlib/ap/tools/debug_console_clnt/debug_console_clnt $RV_RAMDISK_DIR/build/ap/rootfs/
-			cp $TPUV7_RUNTIME_DIR/build/asic/cdmlib/ap/tools/dump_memory/dump $RV_RAMDISK_DIR/build/ap/rootfs/
+			cp $TPUV7_RUNTIME_DIR/build/fw/ap/tools/debug_console_clnt/debug_console_clnt $RV_RAMDISK_DIR/build/ap/rootfs/
+			cp $TPUV7_RUNTIME_DIR/build/fw/ap/tools/dump_memory/dump $RV_RAMDISK_DIR/build/ap/rootfs/
 		else
 			echo "no ap daemon found"
 		fi
@@ -1467,12 +1464,14 @@ function build_rv_firmware()
 	if [ "$CHIP" = "bm1690" ];then
 		build_rv_kernel ap
 		build_rv_kernel tp
-	else
+		build_rv_uroot
+	elif [ "$CHIP" = "mango" ];then
 		build_rv_kernel
+		build_rv_uroot
+		build_rv_edk2
+	elif [ "$CHIP" = "sg2044" ];then
 		build_rv_edk2
 	fi
-
-	build_rv_uroot
 }
 
 function clean_rv_firmware()
@@ -1486,30 +1485,44 @@ function clean_rv_firmware()
 
 function build_rv_firmware_bin()
 {
-	version=$(date "+%Y%m%d%H%M%S")
+	RELEASED_NOTE_PATH=$RV_TOP_DIR/bootloader-riscv/release-note
 	build_rv_firmware
 
-	gcc -g -Werror $RV_SCRIPTS_DIR/gen_spi_flash.c -o $RV_FIRMWARE_INSTALL_DIR/gen_spi_flash
+	gcc $RV_SCRIPTS_DIR/pack_firmware_bin/gen_firmware_xml.c -D${CHIP^^} -o $RV_FIRMWARE_INSTALL_DIR/make_xml
+    	gcc $RV_SCRIPTS_DIR/pack_firmware_bin/pack_firmware_bin.c -o $RV_FIRMWARE_INSTALL_DIR/pack
+
+	if [ "$CHIP" = "mango" ];then
+		RELEASED_NOTE_MD="$RELEASED_NOTE_PATH/sg2042_release_note.md"
+		cp $RV_FIRMWARE/fip.bin  $RV_FIRMWARE_INSTALL_DIR/
+	elif [ "$CHIP" = "sg2044" ];then
+		RELEASED_NOTE_MD="$RELEASED_NOTE_PATH/sg2044_release_note.md"
+	fi	
+
+	if [ ! -e "$RELEASEDOTE_MD" ] || [ ! -s "$RELEASED_NOTE_MD" ];then
+		version="1.0.0"
+	else 
+    		cp $RELEASED_NOTE_MD $RV_FIRMWARE_INSTALL_DIR/
+		version=$(awk 'END {split($1, a, "_"); print a[1]}' $RELEASED_NOTE_MD)
+	fi
 
 	pushd $RV_FIRMWARE_INSTALL_DIR
 
-	rm -f firmware*.bin
-	cp $RV_FIRMWARE/fip.bin  ./
-	dtb_group=$(ls *.dtb | awk '{print ""$1" "$1" 0x601000 0x020000000 "}')
+	rm -f firmware*.bin *.xml
+	./make_xml *.dtb
+	if [ $? -ne 0 ];then
+		popd
+		return
+	fi
+	mkdir -p $RV_SCRIPTS_DIR/build/ && cp ./*.xml $RV_SCRIPTS_DIR/build/
+	./pack *.xml
+	rm -f make_xml pack
 
-	./gen_spi_flash $dtb_group \
-			fw_dynamic.bin fw_dynamic.bin 0x660000 0x00000000 \
-			riscv64_Image riscv64_Image 0x6b0000 0x02000000 \
-			SG2042.fd SG2042.fd 0x02000000 0x02000000 \
-			zsbl.bin zsbl.bin 0x2a00000 0x40000000 \
-			initrd.img initrd.img 0x2b00000 0x30000000
-
-	mv spi_flash.bin firmware-$version.bin
-	rm -f gen_spi_flash
-
-	cp firmware-$version.bin image-bmc
-	$RV_SCRIPTS_DIR/gen-tar-for-bmc.sh image-bmc -o obmc-bios.tar.gz -m ast2600-sophgo -v $version -s
-	rm -f image-bmc
+	mv firmware.bin firmware-$version.bin
+	if [ "$CHIP" = "mango" ];then
+		cp firmware-$version.bin image-bmc
+		$RV_SCRIPTS_DIR/gen-tar-for-bmc.sh image-bmc -o obmc-bios.tar.gz -m ast2600-sophgo -v $version -s
+	fi
+	rm -f image-bmc *.xml *.md 
 
 	popd
 }

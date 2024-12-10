@@ -8,6 +8,8 @@ RV_EULER_OFFICIAL_IMAGE=openEuler-24.03-riscv64-sg2044-20241025.template.img
 DOWNLOAD_RV_EULER_OFFICIAL_IMAGE="wget https://github.com/sophgo/bootloader-riscv/releases/download/sg2044-v0.1/openEuler-24.03-riscv64-sg2044-20241025.template.img.xz"
 UNCOMPRESS_RV_EULER_OFFICIAL_IMAGE="unxz $RV_EULER_OFFICIAL_IMAGE.xz"
 
+RV_SG2044_FSBL_BIN="https://github.com/sophgo/bootloader-riscv/releases/download/sg2044-v0.1/fsbl.bin"
+
 function get_distro_info()
 {
     DISTRO_NAME=`echo $1 | awk -F '-' '{print $1}'`
@@ -86,6 +88,12 @@ function build_rv_image()
 
 	sudo mkdir $EFI_PARTITION_DIR/riscv64
 
+	if [ "$CHIP" = "sg2044" ]; then
+		if [ ! -f "$RV_FIRMWARE_INSTALL_DIR/fsbl.bin" ]; then
+			wget -O "$RV_FIRMWARE_INSTALL_DIR/fsbl.bin" "$RV_SG2044_FSBL_BIN"
+		fi
+	fi
+
 	sudo cp -v $RV_FIRMWARE_INSTALL_DIR/fsbl.bin $EFI_PARTITION_DIR/riscv64
 
 	if [ -f $RV_FIRMWARE_INSTALL_DIR/${CHIP^^}.fd ]; then
@@ -96,19 +104,17 @@ function build_rv_image()
 		sudo cp -v $RV_FIRMWARE_INSTALL_DIR/u-boot.bin $EFI_PARTITION_DIR/riscv64
 	fi
 
-	sudo cp -v $RV_FIRMWARE_INSTALL_DIR/initrd.img $EFI_PARTITION_DIR/riscv64
 	sudo cp -v $RV_FIRMWARE_INSTALL_DIR/zsbl.bin $EFI_PARTITION_DIR/riscv64
 	sudo cp -v $RV_FIRMWARE_INSTALL_DIR/fw_dynamic.bin $EFI_PARTITION_DIR/riscv64
 
 	if [ "$CHIP" = "bm1690" ]; then
+		sudo cp -v $RV_FIRMWARE_INSTALL_DIR/initrd.img $EFI_PARTITION_DIR/riscv64
 		sudo cp -v $RV_FIRMWARE_INSTALL_DIR/rp_Image $EFI_PARTITION_DIR/riscv64
 		sudo cp -v $RV_TOP_DIR/bootloader-riscv/scripts/bm1690-config.ini $RV_FIRMWARE_INSTALL_DIR/conf.ini
 		sudo cp -v $RV_FIRMWARE_INSTALL_DIR/conf.ini $EFI_PARTITION_DIR/riscv64
-	else
-		sudo cp -v $RV_FIRMWARE_INSTALL_DIR/riscv64_Image $EFI_PARTITION_DIR/riscv64
 	fi
 
-	sudo cp -v $RV_FIRMWARE_INSTALL_DIR/*.dtb $EFI_PARTITION_DIR/riscv64
+	sudo cp -v $RV_FIRMWARE_INSTALL_DIR/${CHIP}-*.dtb $EFI_PARTITION_DIR/riscv64
 
 	echo 'mount system files'
 	sudo mount --bind /proc $RV_OUTPUT_DIR/root/proc
