@@ -13,7 +13,7 @@ jobs:
     strategy:
       matrix:
         M_CHIP_NUM: [single, multi]
-        LINUX_BRANCH: [sg2042-dev, sg2042-dev-6.6]
+        LINUX_BRANCH: [sg2042-rel-6.1.31, sg2042-dev-6.6]
 
     env:
       mainline_toolchain: https://github.com/riscv-collab/riscv-gnu-toolchain/releases/download/2024.03.01
@@ -139,7 +139,7 @@ jobs:
               popd
 
       - name: 'Upload Build Artifact'
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: sophgo-bootloader-${{ matrix.M_CHIP_NUM }}-${{ matrix.LINUX_BRANCH }}
           path: firmware_*

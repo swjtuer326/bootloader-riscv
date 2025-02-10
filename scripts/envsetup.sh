@@ -1,5 +1,6 @@
 #!/bin/bash
 
+
 #######################################################################
 # global variables
 #######################################################################
@@ -82,7 +83,7 @@ RV_EULER_SOPHGO_IMAGE=euler-sophgo.img
 
 if [[ "$CHIP" = "mango" ]]; then
 	source $RV_SCRIPTS_DIR/gen_sg2042_img.sh
-elif [[ "$CHIP" = "sg2044" || "$CHIP" = "bm1690" ]]; then
+elif [[ "$CHIP" = "sg2044" ]]; then
 	source $RV_SCRIPTS_DIR/gen_sg2044_img.sh
 else
     echo "unknown chip $CHIP"
@@ -103,11 +104,11 @@ RV_LINUX_GCC_INSTALL_DIR=$RV_GCC_DIR/gcc-riscv64-unknown-linux-gnu
 HOST_ARCH=`uname -m`
 
 if [ $HOST_ARCH = 'riscv64' ]; then
-	RISCV64_LINUX_CROSS_COMPILE=
+	RISCV64_LINUX_CROSS_COMPILE=${RISCV64_LINUX_CROSS_COMPILE:-""}
 else
-	RISCV64_LINUX_CROSS_COMPILE=$RV_LINUX_GCC_INSTALL_DIR/bin/riscv64-unknown-linux-gnu-
+	RISCV64_LINUX_CROSS_COMPILE=${RISCV64_LINUX_CROSS_COMPILE:-"$RV_LINUX_GCC_INSTALL_DIR/bin/riscv64-unknown-linux-gnu-"}
 fi
-RISCV64_ELF_CROSS_COMPILE=$RV_ELF_GCC_INSTALL_DIR/bin/riscv64-unknown-elf-
+RISCV64_ELF_CROSS_COMPILE=${RISCV64_ELF_CROSS_COMPILE:-"$RV_ELF_GCC_INSTALL_DIR/bin/riscv64-unknown-elf-"}
 
 TP_IMAGES=(
 	tp_zsbl.bin
@@ -309,40 +310,6 @@ function clean_rv_bootrom()
 {
 	rm -rf $RV_FIRMWARE_INSTALL_DIR/bootrom.bin
 	rm -rf $RV_BOOTROM_BUILD_DIR
-}
-
-function build_rv_pcie_zsbl()
-{
-	local err
-
-	pushd $RV_ZSBL_SRC_DIR
-	make CROSS_COMPILE=$RISCV64_LINUX_CROSS_COMPILE O=$RV_ZSBL_BUILD_DIR ARCH=riscv bm1690_pcie_defconfig
-	err=$?
-	popd
-
-	if [ $err -ne 0 ]; then
-		echo "making pcie zsbl config failed"
-		return $err
-	    fi
-
-	pushd $RV_ZSBL_BUILD_DIR
-	make -j$(nproc) CROSS_COMPILE=$RISCV64_LINUX_CROSS_COMPILE ARCH=riscv
-	err=$?
-	popd
-
-	if [ $err -ne 0 ]; then
-		echo "making zsbl failed"
-		return $err
-	    fi
-
-	mkdir -p $RV_FIRMWARE_INSTALL_DIR
-	cp $RV_ZSBL_BUILD_DIR/zsbl.bin $RV_FIRMWARE_INSTALL_DIR/pcie_zsbl.bin
-}
-
-function clean_rv_pcie_zsbl()
-{
-	rm -rf $RV_FIRMWARE_INSTALL_DIR/pcie_zsbl.bin
-	rm -rf $RV_ZSBL_BUILD_DIR
 }
 
 function build_rv_tp_zsbl()
@@ -662,14 +629,101 @@ function install_rp_debs()
 	cp $1 $RV_RP_DEB_INSTALL_DIR/
 }
 
+is_enabled() {
+	grep -q "^$1=y" include/config/auto.conf
+}
+
+create_package() {
+	local pname="$1" pdir="$2"
+	local dpkg_deb_opts
+
+	mkdir -m 755 -p "$pdir/DEBIAN"
+	mkdir -p "$pdir/usr/share/doc/$pname"
+	cp debian/copyright "$pdir/usr/share/doc/$pname/"
+	cp debian/changelog "$pdir/usr/share/doc/$pname/changelog.Debian"
+	gzip -n -9 "$pdir/usr/share/doc/$pname/changelog.Debian"
+	sh -c "cd '$pdir'; find . -type f ! -path './DEBIAN/*' -printf '%P\0' \
+		| xargs -r0 md5sum > DEBIAN/md5sums"
+
+	# Fix ownership and permissions
+	dpkg_deb_opts="--root-owner-group"
+
+	# a+rX in case we are in a restrictive umask environment like 0077
+	# ug-s in case we build in a setuid/setgid directory
+	chmod -R go-w,a+rX,ug-s "$pdir"
+	cp debian/control debian/control.bak
+	sed -i 's/Architecture: riscv64/Architecture: amd64/g' debian/control
+
+	# Create the package
+	dpkg-gencontrol -p$pname -P"$pdir"
+	dpkg-deb $dpkg_deb_opts ${KDEB_COMPRESS:+-Z$KDEB_COMPRESS} --build "$pdir" ..
+
+	mv debian/control.bak debian/control
+}
+
+package_kernel_headers () {
+
+
+	echo "package_kernel_headers"
+	echo "$RV_KERNEL_BUILD_DIR"
+	echo "$version"
+	pushd $RV_KERNEL_BUILD_DIR
+	SRCARCH=$2
+	pdir="./header_debs"
+	version=$1
+
+	srctree=$RV_KERNEL_SRC_DIR
+
+	rm -rf $pdir
+	mkdir -p $pdir
+	mkdir -p $pdir/debian
+	(
+		cd $srctree
+		find . -name Makefile\* -o -name Kconfig\* -o -name \*.pl
+		find arch/*/include include scripts -type f -o -type l
+		find arch/$SRCARCH -name Kbuild.platforms -o -name Platform
+		find $(find arch/$SRCARCH -name include -o -name scripts -type d) -type f
+	) > debian/hdrsrcfiles
+
+	{
+		if is_enabled CONFIG_OBJTOOL; then
+			echo tools/objtool/objtool
+		fi
+
+		find arch/$SRCARCH/include Module.symvers include scripts -type f
+
+		if is_enabled CONFIG_GCC_PLUGINS; then
+			find scripts/gcc-plugins -name \*.so
+		fi
+	} > debian/hdrobjfiles
+
+	destdir=$pdir/usr/src/linux-headers-$version
+	mkdir -p $destdir
+	tar -c -f - -C $srctree -T debian/hdrsrcfiles | tar -xf - -C $destdir
+	tar -c -f - -T debian/hdrobjfiles | tar -xf - -C $destdir
+	rm -f debian/hdrsrcfiles debian/hdrobjfiles
+
+	# copy .config manually to be where it's expected to be
+	cp $RV_KERNEL_BUILD_DIR/.config $destdir/.config
+	cp System.map $destdir/
+
+	find certs/ -name *.pem -exec cp {} $destdir/certs/ \;
+
+	mkdir -p $pdir/lib/modules/$version/
+	ln -s /usr/src/linux-headers-$version $pdir/lib/modules/$version/build
+	popd
+	create_package linux-headers-$version $pdir
+}
+
+
 function build_rv_kernel()
 {
 	local RV_KERNEL_CONFIG=${VENDOR}_${CHIP}_${KERNEL_VARIANT}_defconfig
 	local err
 
-	if [ "$CHIP" = "bm1690" ];then
+	if [ "$CHIP" = "sg2044" ];then
 		if [ "$1" = "" ];then
-			echo "build bm1690 kernel, eg: build_rv_kernel ap|rp|tp"
+			echo "build sg2044 kernel, eg: build_rv_kernel ap|rp|tp"
 			return -1
 		fi
 		RV_KERNEL_CONFIG=${VENDOR}_${CHIP}_$1_${KERNEL_VARIANT}_defconfig
@@ -724,9 +778,13 @@ function build_rv_kernel()
 
 		mkdir -p ./debs
 		local KERNELRELEASE=$(make ARCH=riscv LOCALVERSION="" kernelrelease)
+		package_kernel_headers ${KERNELRELEASE} riscv
+
 		cp ../linux-image-${KERNELRELEASE}_*.deb ./debs/linux-image-${KERNELRELEASE}.deb
 		cp ../linux-image-${KERNELRELEASE}-dbg_*.deb ./debs/linux-image-${KERNELRELEASE}-dbg.deb
-		cp ../linux-headers-${KERNELRELEASE}_*.deb ./debs/linux-headers-${KERNELRELEASE}.deb
+		cp ../linux-headers-${KERNELRELEASE}*_amd64.deb ./debs/linux-headers-${KERNELRELEASE}_amd64.deb
+		cp ../linux-headers-${KERNELRELEASE}*_riscv64.deb ./debs/linux-headers-${KERNELRELEASE}_riscv64.deb
+
 		install_rp_debs "./debs/*.deb"
 		install_rp_debs $RV_KERNEL_SRC_DIR/tools/include/tools/be_byteshift.h
 		install_rp_debs $RV_KERNEL_SRC_DIR/tools/include/tools/le_byteshift.h
@@ -734,7 +792,7 @@ function build_rv_kernel()
 	fi
 
 	mkdir -p $RV_FIRMWARE_INSTALL_DIR
-	if [ "$CHIP" = "bm1690" ];then
+	if [ "$CHIP" = "sg2044" ];then
 		cp $RV_KERNEL_BUILD_DIR/arch/riscv/boot/Image $RV_FIRMWARE_INSTALL_DIR/$1_Image
 	else
 		cp $RV_KERNEL_BUILD_DIR/arch/riscv/boot/Image $RV_FIRMWARE_INSTALL_DIR/riscv64_Image
@@ -751,7 +809,7 @@ function clean_rv_kernel()
 	rm -rf $RV_FIRMWARE_INSTALL_DIR/vmlinux
 	rm -rf $RV_FIRMWARE_INSTALL_DIR/*.dtb
 
-	if [ "$CHIP" = "bm1690" ];then
+	if [ "$CHIP" = "sg2044" ];then
 		rm -rf $RV_KERNEL_SRC_DIR/build/$CHIP/*${KERNEL_VARIANT}
 	else
 		rm -rf $RV_KERNEL_BUILD_DIR
@@ -893,6 +951,7 @@ function build_rv_euler_kernel()
 	local KERNELRELEASE
 	local RPMBUILD_DIR
 	local err
+	local os_name=$(grep -oP "^NAME=(.*)" /etc/os-release | awk -F '=' '{print $2}' | tr -d '"')
 
 	pushd $RV_KERNEL_SRC_DIR
 	make ARCH=riscv CROSS_COMPILE=$RISCV64_LINUX_CROSS_COMPILE $RV_KERNEL_CONFIG
@@ -905,6 +964,20 @@ function build_rv_euler_kernel()
 
 	if [ "$CHIP_NUM" = "multi" ];then
 		sed -i 's/# CONFIG_SOPHGO_MULTI_CHIP_CLOCK_SYNC is not set/CONFIG_SOPHGO_MULTI_CHIP_CLOCK_SYNC=y/' .config
+	fi
+
+	make -j$(nproc) ARCH=riscv CROSS_COMPILE=$RISCV64_LINUX_CROSS_COMPILE LOCALVERSION="" dtbs
+	if [ ! -d $RV_FIRMWARE_INSTALL_DIR ]; then
+		mkdir -p $RV_FIRMWARE_INSTALL_DIR
+	else
+		rm -f $RV_FIRMWARE_INSTALL_DIR/${CHIP}-*.dtb
+	fi
+
+	cp $RV_KERNEL_SRC_DIR/arch/riscv/boot/dts/sophgo/${CHIP}-*.dtb $RV_FIRMWARE_INSTALL_DIR
+
+	if [ "${CHIP}_$(arch)_${os_name}" == "sg2044_riscv64_openEuler" ]; then
+		build_rv_euler_kernel_native
+		return $?
 	fi
 
 	if [ -e ~/.rpmmacros ]; then
@@ -922,15 +995,6 @@ EOT
 	else
 		RPMBUILD_DIR=$RV_KERNEL_SRC_DIR/rpmbuild
 	fi
-
-	make -j$(nproc) ARCH=riscv CROSS_COMPILE=$RISCV64_LINUX_CROSS_COMPILE LOCALVERSION="" dtbs
-	if [ ! -d $RV_FIRMWARE_INSTALL_DIR ]; then
-		mkdir -p $RV_FIRMWARE_INSTALL_DIR
-	else
-		rm -f $RV_FIRMWARE_INSTALL_DIR/${CHIP}-*.dtb
-	fi
-
-	cp $RV_KERNEL_SRC_DIR/arch/riscv/boot/dts/sophgo/${CHIP}-*.dtb $RV_FIRMWARE_INSTALL_DIR
 
 	make -j$(nproc) ARCH=riscv CROSS_COMPILE=$RISCV64_LINUX_CROSS_COMPILE LOCALVERSION="" rpm-pkg
 	ret=$?
@@ -1097,7 +1161,7 @@ function build_rv_ramdisk()
 		if [ -f $TPUV7_TP_DAEMON ]; then
 			cp $TPUV7_TP_DAEMON $RV_RAMDISK_DIR/build/$RAMDISK_CPU_TYPE/rootfs/
 		else
-			echo "no ap daemon found"
+			echo "no tp daemon found"
 		fi
 		# copy other non-generated files
 		if [ -d $TPUV7_RUNTIME_DIR/cdmlib/overlay/tp ]; then
@@ -1335,9 +1399,12 @@ function build_rv_uroot()
 	pushd $RV_UROOT_DIR
 	GOARCH=riscv64 go build
 	GOOS=linux GOARCH=riscv64 $RV_UROOT_DIR/u-root -uroot-source $RV_UROOT_DIR -build bb \
-	    -uinitcmd="boot" -files ../busybox/busybox:bin/busybox -o $RV_UROOT_DIR/initramfs.cpio \
-		-files "$RV_UROOT_DIR/firmware/:lib/firmware/" \
-	    core boot
+	    -uinitcmd="/init-boot.sh" \
+	    -files ./cmds/init/init-boot.sh:init-boot.sh \
+	    -files ../busybox/busybox:bin/busybox \
+	    -o $RV_UROOT_DIR/initramfs.cpio \
+	    -files "$RV_UROOT_DIR/firmware/:lib/firmware/" \
+	    core boot ./cmds/boot/multiboot
 	popd
 	cp $RV_UROOT_DIR/initramfs.cpio $RV_FIRMWARE_INSTALL_DIR/initrd.img
 }
@@ -1461,11 +1528,7 @@ function build_rv_firmware()
 {
 	build_rv_zsbl
 	build_rv_sbi
-	if [ "$CHIP" = "bm1690" ];then
-		build_rv_kernel ap
-		build_rv_kernel tp
-		build_rv_uroot
-	elif [ "$CHIP" = "mango" ];then
+	if [ "$CHIP" = "mango" ];then
 		build_rv_kernel
 		build_rv_uroot
 		build_rv_edk2
@@ -1496,15 +1559,15 @@ function build_rv_firmware_bin()
 		cp $RV_FIRMWARE/fip.bin  $RV_FIRMWARE_INSTALL_DIR/
 	elif [ "$CHIP" = "sg2044" ];then
 		RELEASED_NOTE_MD="$RELEASED_NOTE_PATH/sg2044_release_note.md"
-	fi	
+	fi
 
 	if [ ! -e "$RELEASED_NOTE_MD" ] || [ ! -s "$RELEASED_NOTE_MD" ];then
 		version="1.0.0"
-	else 
-    		cp $RELEASED_NOTE_MD $RV_FIRMWARE_INSTALL_DIR/
-		version=$(awk 'END {split($1, a, "_"); print a[1]}' $RELEASED_NOTE_MD)
+	else
+		cp $RELEASED_NOTE_MD $RV_FIRMWARE_INSTALL_DIR/
+		LAST_MATCH=$(grep -oE '[0-9]+\.[0-9]+\.[0-9]+_[0-9]{4}-[0-9]{2}-[0-9]{2}' "$RELEASED_NOTE_MD" | tail -n 1)
+		version="$(echo "$LAST_MATCH" | cut -d'_' -f1)"
 	fi
-
 	pushd $RV_FIRMWARE_INSTALL_DIR
 
 	rm -f firmware*.bin *.xml
@@ -1521,7 +1584,7 @@ function build_rv_firmware_bin()
 		cp firmware.bin image-bmc
 		$RV_SCRIPTS_DIR/gen-tar-for-bmc.sh image-bmc -o obmc-bios.tar.gz -m ast2600-sophgo -v $version -s
 	fi
-	rm -f image-bmc *.xml *.md 
+	rm -f image-bmc *.xml *.md
 
 	popd
 }
@@ -1562,7 +1625,7 @@ function build_rv_firmware_image()
 	sudo mkdir -p efi/riscv64
 
 	echo copy bootloader...
-	if [[ "$CHIP" = "sg2044" || "$CHIP" = "bm1690" ]];then
+	if [[ "$CHIP" = "sg2044" ]];then
 	sudo cp $RV_FIRMWARE/fsbl.bin efi/riscv64
 	sudo cp zsbl.bin efi/riscv64
 	else
@@ -1605,7 +1668,7 @@ function build_rv_firmware_package()
 	mkdir -p firmware/riscv64
 
 	echo copy bootloader...
-	if [[ "$CHIP" = "sg2044" || "$CHIP" = "bm1690" ]];then
+	if [[ "$CHIP" = "sg2044" ]];then
 	cp $RV_FIRMWARE/fsbl.bin firmware/riscv64
 	cp zsbl.bin firmware/riscv64
 	else
